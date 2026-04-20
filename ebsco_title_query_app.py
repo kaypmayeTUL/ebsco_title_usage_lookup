@@ -484,7 +484,7 @@ def page_home():
         "to batch-check dozens or hundreds at once."
     )
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown(
             """
@@ -524,10 +524,29 @@ def page_home():
             """,
             unsafe_allow_html=True,
         )
+    with c3:
+        st.markdown(
+            """
+            <div class="tool-card">
+                <h3>🏆 Top titles</h3>
+                <p><em>Auto-ranked report of your most-used titles.</em></p>
+                <p>See the highest-use titles by any COUNTER metric, filtered
+                by platform, publisher, or data type. Download the ranking as a CSV.</p>
+                <hr>
+                <p><strong>Good for:</strong></p>
+                <ul>
+                    <li>Collection reports and annual summaries</li>
+                    <li>Demonstrating e-resource ROI</li>
+                    <li>Spotting unexpected heavy hitters</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     st.markdown("---")
     st.info(
         "👈 Upload your COUNTER TR CSV in the sidebar to get started. "
-        "Then use the **Batch lookup** or **Single search** tabs in the sidebar."
+        "Then pick a tool from the sidebar."
     )
 
 
@@ -719,6 +738,235 @@ def page_single_search(records, month_cols, index):
 
 
 # ============================================================
+# TOP TITLES — auto-ranked report of most-used titles
+# ============================================================
+
+@st.cache_data(show_spinner=False)
+def _top_titles_dataframe(_records_key: int, records: list[dict]) -> pd.DataFrame:
+    """Flatten every record into a ranked DataFrame of metric totals + meta.
+
+    Cached on the records-list length so switching tools doesn't recompute.
+    """
+    rows = []
+    for rec in records:
+        meta = rec["meta"]
+        metrics = rec.get("metrics", {})
+        row = {
+            "Title": meta.get("Title", ""),
+            "Publisher": meta.get("Publisher", ""),
+            "Platform": meta.get("Platform", ""),
+            "Data Type": meta.get("Data Type", ""),
+            "ISBN": meta.get("ISBN", ""),
+            "Print_ISSN": meta.get("Print_ISSN", ""),
+            "Online_ISSN": meta.get("Online_ISSN", ""),
+        }
+        for m in PREFERRED_METRICS:
+            row[m] = metrics.get(m, {}).get("total", 0)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def page_top_titles(records, month_cols, index):
+    st.title("🏆 Top titles")
+    st.markdown(
+        "See the most-used titles in the report, ranked by any COUNTER metric. "
+        "Filter by platform, publisher, or data type to focus on a specific slice."
+    )
+
+    df = _top_titles_dataframe(len(records), records)
+
+    # ---- Controls
+    with st.container(border=True):
+        st.subheader("Filters and ranking")
+
+        # Pick ranking metric — only offer metrics that actually have data
+        available_metrics = [m for m in PREFERRED_METRICS if df[m].sum() > 0]
+        if not available_metrics:
+            st.warning("This report has no usage data in any of the standard COUNTER metrics.")
+            return
+
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            metric_label = st.selectbox(
+                "Rank by metric:",
+                available_metrics,
+                index=0,
+                format_func=lambda m: m.replace("_", " "),
+                key="top_metric",
+                help=(
+                    "**Total Item Requests** is the most inclusive measure (counts every "
+                    "download, even repeats by the same user). **Unique Item Requests** "
+                    "is the COUNTER 5 standard for comparing across platforms."
+                ),
+            )
+        with c2:
+            top_n = st.number_input(
+                "Number of titles to show:",
+                min_value=5,
+                max_value=min(1000, len(df)),
+                value=min(50, len(df)),
+                step=5,
+                key="top_n",
+            )
+
+        f1, f2, f3, f4 = st.columns(4)
+        with f1:
+            platforms = sorted(p for p in df["Platform"].unique() if p)
+            sel_platforms = st.multiselect(
+                "Platform",
+                platforms,
+                default=[],
+                key="top_platform",
+                placeholder="All platforms",
+            )
+        with f2:
+            data_types = sorted(d for d in df["Data Type"].unique() if d)
+            sel_data_types = st.multiselect(
+                "Data type",
+                data_types,
+                default=[],
+                key="top_data_type",
+                placeholder="All data types",
+            )
+        with f3:
+            publishers = sorted(p for p in df["Publisher"].unique() if p)
+            sel_publishers = st.multiselect(
+                "Publisher",
+                publishers,
+                default=[],
+                key="top_publisher",
+                placeholder="All publishers",
+                help=f"{len(publishers)} publishers in this report.",
+            )
+        with f4:
+            min_threshold = st.number_input(
+                f"Min. {metric_label.replace('_', ' ')}",
+                min_value=0,
+                value=1,
+                step=1,
+                key="top_min",
+                help="Exclude titles below this value. Default excludes zero-use titles.",
+            )
+
+    # ---- Apply filters
+    filtered = df.copy()
+    if sel_platforms:
+        filtered = filtered[filtered["Platform"].isin(sel_platforms)]
+    if sel_data_types:
+        filtered = filtered[filtered["Data Type"].isin(sel_data_types)]
+    if sel_publishers:
+        filtered = filtered[filtered["Publisher"].isin(sel_publishers)]
+    if min_threshold > 0:
+        filtered = filtered[filtered[metric_label] >= min_threshold]
+
+    filtered = filtered.sort_values(metric_label, ascending=False).reset_index(drop=True)
+
+    # ---- Summary metrics
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    with mc1:
+        st.metric("Titles in report", f"{len(df):,}")
+    with mc2:
+        st.metric("After filters", f"{len(filtered):,}")
+    with mc3:
+        total_use = int(filtered[metric_label].sum())
+        st.metric(f"Total {metric_label.replace('_', ' ')}", f"{total_use:,}")
+    with mc4:
+        if len(filtered):
+            top_share = filtered.head(int(top_n))[metric_label].sum()
+            share_pct = (top_share / total_use * 100) if total_use else 0
+            st.metric(
+                f"Top {int(top_n)} share",
+                f"{share_pct:.1f}%",
+                help="Percentage of total usage (after filters) concentrated in the top N titles.",
+            )
+
+    if len(filtered) == 0:
+        st.warning("No titles match your current filters.")
+        return
+
+    st.markdown("---")
+
+    # ---- Ranked table + chart
+    tab_chart, tab_table = st.tabs(["📊 Chart", "📄 Ranked table"])
+
+    top = filtered.head(int(top_n)).copy()
+    top.insert(0, "Rank", range(1, len(top) + 1))
+
+    with tab_chart:
+        # Horizontal bar chart for readability of long titles.
+        # Truncate very long titles to keep the chart legible.
+        chart_df = top.copy()
+        chart_df["Display Title"] = chart_df["Title"].apply(
+            lambda t: (t[:75] + "…") if len(t) > 78 else t
+        )
+        # Add platform suffix when multiple platforms present, for disambiguation
+        if chart_df["Platform"].nunique() > 1:
+            chart_df["Display Title"] = (
+                chart_df["Display Title"] + "  [" + chart_df["Platform"] + "]"
+            )
+
+        # Reverse for horizontal bar so #1 appears at top
+        chart_df = chart_df.iloc[::-1]
+        fig_height = max(400, 22 * len(chart_df))
+        fig = px.bar(
+            chart_df,
+            x=metric_label,
+            y="Display Title",
+            orientation="h",
+            color_discrete_sequence=["#285C4D"],
+            title=f"Top {len(top)} titles by {metric_label.replace('_', ' ')}",
+            hover_data={
+                "Publisher": True,
+                "Platform": True,
+                "Data Type": True,
+                metric_label: True,
+                "Display Title": False,
+            },
+        )
+        fig.update_layout(
+            height=fig_height,
+            margin=dict(l=20, r=20, t=60, b=20),
+            yaxis_title="",
+            xaxis_title=metric_label.replace("_", " "),
+            showlegend=False,
+        )
+        st.plotly_chart(fig, use_container_width=True, key="top_titles_chart")
+
+    with tab_table:
+        # Reorder columns so ranking metric is prominent
+        display_cols = (
+            ["Rank", "Title", metric_label]
+            + [m for m in PREFERRED_METRICS if m != metric_label and m in top.columns]
+            + ["Publisher", "Platform", "Data Type", "ISBN", "Print_ISSN", "Online_ISSN"]
+        )
+        display_cols = [c for c in display_cols if c in top.columns]
+        st.dataframe(
+            top[display_cols],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("---")
+
+    # ---- Download
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        st.download_button(
+            f"⬇️ Download top {len(top)} as CSV",
+            data=top.to_csv(index=False).encode("utf-8"),
+            file_name=f"top_titles_by_{metric_label.lower()}.csv",
+            mime="text/csv",
+        )
+    with dc2:
+        st.download_button(
+            f"⬇️ Download full filtered list ({len(filtered):,} titles)",
+            data=filtered.to_csv(index=False).encode("utf-8"),
+            file_name=f"all_filtered_titles_by_{metric_label.lower()}.csv",
+            mime="text/csv",
+        )
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -737,14 +985,16 @@ def main():
         st.subheader("2. Choose a tool")
         page = st.radio(
             "Tool:",
-            ["🏠 Home", "📋 Batch lookup", "🔍 Single title search"],
-            index=1,  # default to Batch since that's the new feature
+            ["🏠 Home", "🏆 Top titles", "📋 Batch lookup", "🔍 Single title search"],
+            index=1,  # default to Top titles — it's the zero-input overview
             key="nav",
             label_visibility="collapsed",
         )
 
     if page == "🏠 Home":
         page_home()
+    elif page == "🏆 Top titles":
+        page_top_titles(records, month_cols, index)
     elif page == "📋 Batch lookup":
         page_batch_lookup(records, month_cols, index)
     else:
