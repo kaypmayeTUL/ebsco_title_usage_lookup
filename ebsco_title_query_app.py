@@ -310,7 +310,9 @@ def parse_pasted_titles(text: str) -> list[str]:
 # DISPLAY HELPERS
 # ============================================================
 
-def render_record(rec: dict, month_cols: list[str]) -> None:
+def render_record(rec: dict, month_cols: list[str], key_prefix: str = "") -> None:
+    """Render a single title record. ``key_prefix`` must be unique per call
+    within a page render — Streamlit requires unique element IDs for charts."""
     meta = rec["meta"]
     st.markdown(
         f"""
@@ -375,7 +377,11 @@ def render_record(rec: dict, month_cols: list[str]) -> None:
                     margin=dict(l=20, r=20, t=40, b=20),
                     showlegend=False,
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                    key=f"chart_{key_prefix}_{m}" if key_prefix else f"chart_{id(rec)}_{m}",
+                )
                 break
 
 
@@ -625,13 +631,13 @@ def page_batch_lookup(records, month_cols, index):
             st.info("No matches for any of the titles in your list.")
         else:
             # For each input title, show matches (multiple platforms = multiple records)
-            for query, idxs in found_queries:
+            for q_idx, (query, idxs) in enumerate(found_queries):
                 with st.expander(
                     f"**{query}** — {len(idxs)} match(es)",
                     expanded=(len(found_queries) <= 3),
                 ):
                     for i in idxs:
-                        render_record(records[i], month_cols)
+                        render_record(records[i], month_cols, key_prefix=f"batch_q{q_idx}_r{i}")
 
     with tab_missing:
         if not missing_queries:
@@ -709,7 +715,7 @@ def page_single_search(records, month_cols, index):
         return
 
     for i in idxs:
-        render_record(records[i], month_cols)
+        render_record(records[i], month_cols, key_prefix=f"single_r{i}")
 
 
 # ============================================================
